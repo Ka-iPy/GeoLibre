@@ -3,9 +3,13 @@ import {
   type SwipeControlOptions,
   type SwipeState,
 } from "maplibre-gl-swipe";
-import type { GeoLibreAppAPI, GeoLibrePlugin } from "../types";
+import type {
+  GeoLibreAppAPI,
+  GeoLibreMapControlPosition,
+  GeoLibrePlugin,
+} from "../types";
 
-const SWIPE_CONTROL_POSITION = "top-right";
+let swipeControlPosition: GeoLibreMapControlPosition = "top-left";
 
 let swipeControl: SwipeControl | null = null;
 let unsubscribeBasemap: (() => void) | null = null;
@@ -17,11 +21,12 @@ export const maplibreSwipePlugin: GeoLibrePlugin = {
   activate: (app: GeoLibreAppAPI) => {
     swipeControl = new SwipeControl(getSwipeControlOptions(app));
 
-    const added = app.addMapControl(swipeControl, SWIPE_CONTROL_POSITION);
+    const added = app.addMapControl(swipeControl, swipeControlPosition);
     if (!added) {
       swipeControl = null;
       return false;
     }
+    setTimeout(() => swipeControl?.expand(), 0);
 
     // The control reads the basemap style only on construction, so recreate it
     // when the active basemap changes to keep its basemap-layer grouping in
@@ -33,7 +38,7 @@ export const maplibreSwipePlugin: GeoLibrePlugin = {
       swipeControl = new SwipeControl(
         getSwipeControlOptions(app, previousState),
       );
-      app.addMapControl(swipeControl, SWIPE_CONTROL_POSITION);
+      app.addMapControl(swipeControl, swipeControlPosition);
     });
   },
   deactivate: (app: GeoLibreAppAPI) => {
@@ -42,6 +47,18 @@ export const maplibreSwipePlugin: GeoLibrePlugin = {
     if (!swipeControl) return;
     app.removeMapControl(swipeControl);
     swipeControl = null;
+  },
+  getMapControlPosition: () => swipeControlPosition,
+  setMapControlPosition: (
+    app: GeoLibreAppAPI,
+    position: GeoLibreMapControlPosition,
+  ) => {
+    swipeControlPosition = position;
+    if (!swipeControl) return;
+    app.removeMapControl(swipeControl);
+    const added = app.addMapControl(swipeControl, swipeControlPosition);
+    if (!added) return false;
+    setTimeout(() => swipeControl?.expand(), 0);
   },
 };
 
@@ -53,7 +70,7 @@ function getSwipeControlOptions(
     orientation: previousState?.orientation ?? "vertical",
     position: previousState?.position ?? 50,
     showPanel: true,
-    collapsed: previousState?.collapsed ?? true,
+    collapsed: previousState?.collapsed ?? false,
     title: "Layer Swipe",
     panelWidth: 300,
     maxHeight: 480,
