@@ -13,6 +13,7 @@ import {
   openLidarLayerPanel,
   openPMTilesLayerPanel,
   openSplattingLayerPanel,
+  openStacSearchLayerPanel,
   openZarrLayerPanel,
   type GeoLibreMapControlPosition,
 } from "@geolibre/plugins";
@@ -150,6 +151,9 @@ export function TopToolbar({
   const handleAddPMTilesLayer = () => {
     openPMTilesLayerPanel(appApi);
   };
+  const handleAddStacLayer = () => {
+    openStacSearchLayerPanel(appApi);
+  };
   const handleAddZarrLayer = () => {
     openZarrLayerPanel(appApi);
   };
@@ -226,6 +230,9 @@ export function TopToolbar({
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={handleAddSplattingLayer}>
             Add Splatting Layer
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={handleAddStacLayer}>
+            Add STAC Layer
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
