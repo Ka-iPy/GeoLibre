@@ -19,9 +19,21 @@ function browserSafeFileName(path: string): string {
   return path.split(/[/\\]/).pop() || "project.geolibre.json";
 }
 
-interface FileDialogFilter {
+export interface FileDialogFilter {
   name: string;
   extensions: string[];
+}
+
+interface PickLocalPathOptions {
+  accept?: string;
+  directory?: boolean;
+  filters?: FileDialogFilter[];
+}
+
+interface PickSavePathOptions {
+  browserTypes?: BrowserFilePickerType[];
+  defaultName: string;
+  filters?: FileDialogFilter[];
 }
 
 interface LocalDataFileOptions {
@@ -610,6 +622,54 @@ export async function openLocalDataFileWithFallback(
     };
     input.click();
   });
+}
+
+export async function pickLocalPathWithFallback(
+  options: PickLocalPathOptions = {},
+): Promise<string | null> {
+  if (isTauri()) {
+    const selected = await open({
+      directory: options.directory ?? false,
+      filters: options.filters,
+      multiple: false,
+    });
+    return typeof selected === "string" ? selected : null;
+  }
+
+  // Browsers cannot expose absolute filesystem paths, and Whitebox parameters
+  // require a real path. Return null so callers surface the desktop-only
+  // message rather than passing a non-resolvable bare file name.
+  return null;
+}
+
+export async function pickSavePathWithFallback(
+  options: PickSavePathOptions,
+): Promise<string | null> {
+  if (isTauri()) {
+    return save({
+      defaultPath: options.defaultName,
+      filters: options.filters,
+    });
+  }
+
+  const pickerWindow = window as BrowserFilePickerWindow;
+  if (pickerWindow.showSaveFilePicker) {
+    try {
+      await pickerWindow.showSaveFilePicker({
+        suggestedName: options.defaultName,
+        types: options.browserTypes,
+        excludeAcceptAllOption: false,
+      });
+    } catch (error) {
+      if (isAbortError(error)) return null;
+      console.warn("Browser save path picker failed", error);
+    }
+  }
+
+  // The browser only exposes a leaf file name, never a real filesystem path,
+  // so return null (matching pickLocalPathWithFallback) rather than handing a
+  // non-resolvable name to a Whitebox path parameter.
+  return null;
 }
 
 export async function openGeoJsonFile(): Promise<{

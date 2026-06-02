@@ -12,10 +12,31 @@ Future integrations (v0.5+):
 
 from __future__ import annotations
 
+import signal
+import threading
+import time
+
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .whitebox import router as whitebox_router
+
 app = FastAPI(title="GeoLibre Server", version="0.6.0")
+# Restrict CORS to the Tauri webview origins and the pinned Vite dev server
+# (vite.config.ts sets strictPort on 5173) rather than any localhost port, so a
+# stray local web app cannot reach the Whitebox endpoints from a browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=(
+        r"^(http://localhost:5173|http://127\.0\.0\.1:5173"
+        r"|tauri://localhost|http://tauri\.localhost)$"
+    ),
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+app.include_router(whitebox_router)
 
 
 class RunRequest(BaseModel):
@@ -26,6 +47,24 @@ class RunRequest(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/shutdown")
+def shutdown():
+    """Request graceful shutdown of the local sidecar process."""
+    threading.Thread(target=_terminate_current_process, daemon=True).start()
+    return {"status": "shutting_down"}
+
+
+def _terminate_current_process() -> None:
+    """Terminate the current process after the response is returned.
+
+    Raises ``SIGINT`` rather than ``SIGTERM`` so uvicorn runs its graceful
+    shutdown on every platform. On Windows ``os.kill`` with ``SIGTERM`` maps to
+    an uncatchable ``TerminateProcess`` that would bypass lifespan shutdown.
+    """
+    time.sleep(0.2)
+    signal.raise_signal(signal.SIGINT)
 
 
 @app.get("/algorithms")
