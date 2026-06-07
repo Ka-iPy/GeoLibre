@@ -15,6 +15,7 @@ import {
   Separator,
   Slider,
 } from "@geolibre/ui";
+import type { MapController } from "@geolibre/map";
 import {
   ChevronDown,
   ChevronUp,
@@ -24,9 +25,15 @@ import {
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import { type MouseEvent as ReactMouseEvent, useEffect, useState } from "react";
+import {
+  type MouseEvent as ReactMouseEvent,
+  type RefObject,
+  useEffect,
+  useState,
+} from "react";
 
 interface StylePanelProps {
+  mapControllerRef: RefObject<MapController | null>;
   onResizeStart: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }
 
@@ -892,12 +899,16 @@ function RasterStyleSlider({
   );
 }
 
-export function StylePanel({ onResizeStart }: StylePanelProps) {
+export function StylePanel({
+  mapControllerRef,
+  onResizeStart,
+}: StylePanelProps) {
   const selectedLayerId = useAppStore((s) => s.selectedLayerId);
   const layers = useAppStore((s) => s.layers);
   const setLayerOpacity = useAppStore((s) => s.setLayerOpacity);
   const setLayerStyle = useAppStore((s) => s.setLayerStyle);
   const updateLayer = useAppStore((s) => s.updateLayer);
+  const moveLayer = useAppStore((s) => s.moveLayer);
   const [isCollapsed, setIsCollapsed] = useState(isMobileViewport);
   const [draftBeforeId, setDraftBeforeId] = useState("");
   const [draftColorExpression, setDraftColorExpression] = useState("");
@@ -1321,10 +1332,24 @@ export function StylePanel({ onResizeStart }: StylePanelProps) {
       vectorStyleExpression: draftVectorStyleExpression.trim(),
     });
   };
-  const applyBeforeId = () => {
-    updateLayer(layer.id, {
-      beforeId: draftBeforeId.trim() || undefined,
-    });
+  const applyBeforeId = (value: string) => {
+    // Picking another user layer is a one-shot reorder in the layer list;
+    // beforeId metadata only works for raw MapLibre (basemap) layer ids.
+    const otherLayers = layers.filter((l) => l.id !== layer.id);
+    const targetIndex = otherLayers.findIndex((l) => l.id === value);
+    if (targetIndex >= 0) {
+      setDraftBeforeId("");
+      // Move first so the sync triggered by each store update already sees
+      // the correct array position.
+      moveLayer(layer.id, targetIndex);
+      if (layer.beforeId) updateLayer(layer.id, { beforeId: undefined });
+      return;
+    }
+    setDraftBeforeId(value);
+    const nextBeforeId = value.trim() || undefined;
+    if (nextBeforeId !== layer.beforeId) {
+      updateLayer(layer.id, { beforeId: nextBeforeId });
+    }
   };
   const applyExtrusionSettings = () => {
     if (draftAdvancedExtrusionEnabled) {
@@ -1359,20 +1384,50 @@ export function StylePanel({ onResizeStart }: StylePanelProps) {
       extrusionHeightExpression: draftHeightExpression.trim(),
     });
   };
+  // NOTE: not reactive to basemap switches — the ref does not trigger a
+  // re-render, so the list refreshes on the next store-driven render.
+  const basemapStyleLayerIds =
+    mapControllerRef.current?.getBasemapStyleLayerIds() ?? [];
+  const otherLayers = layers.filter((l) => l.id !== layer.id);
+  const orphanedBeforeId =
+    draftBeforeId &&
+    !basemapStyleLayerIds.includes(draftBeforeId) &&
+    !otherLayers.some((l) => l.id === draftBeforeId)
+      ? draftBeforeId
+      : null;
   const beforeIdControl = (
     <div className="space-y-2">
-      <Label htmlFor="beforeId">Before ID</Label>
-      <Input
+      <Label htmlFor="beforeId">Insert before</Label>
+      <Select
         id="beforeId"
         value={draftBeforeId}
-        placeholder="MapLibre layer ID"
-        onChange={(event) => setDraftBeforeId(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          applyBeforeId();
-        }}
-      />
+        onChange={(event) => applyBeforeId(event.target.value)}
+      >
+        <option value="">Layer order (default)</option>
+        {orphanedBeforeId && (
+          <optgroup label="Saved (unavailable)">
+            <option value={orphanedBeforeId}>{orphanedBeforeId}</option>
+          </optgroup>
+        )}
+        {otherLayers.length > 0 && (
+          <optgroup label="Layers">
+            {[...otherLayers].reverse().map((otherLayer) => (
+              <option key={otherLayer.id} value={otherLayer.id}>
+                {otherLayer.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {basemapStyleLayerIds.length > 0 && (
+          <optgroup label="Basemap layers">
+            {basemapStyleLayerIds.map((styleLayerId) => (
+              <option key={styleLayerId} value={styleLayerId}>
+                {styleLayerId}
+              </option>
+            ))}
+          </optgroup>
+        )}
+      </Select>
     </div>
   );
   const minZoom = styleValue(style, "minZoom");
