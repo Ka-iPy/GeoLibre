@@ -21,6 +21,8 @@ import type {
   CogLayerControlOptions,
   CogLayerEventHandler,
   CogLayerInfo,
+  BookmarkControl,
+  BookmarkControlOptions,
   ColorbarGuiControl,
   ColorbarGuiControlOptions,
   ControlGrid,
@@ -34,6 +36,11 @@ import type {
   LegendGuiControlOptions,
   LidarControl,
   LidarLayerAdapter,
+  MapBookmark,
+  MeasureControl,
+  MeasureControlOptions,
+  MinimapControl,
+  MinimapControlOptions,
   PMTilesLayerControl,
   PMTilesLayerControlOptions,
   PMTilesLayerEventHandler,
@@ -47,6 +54,8 @@ import type {
   StacSearchControlOptions,
   StacSearchEventHandler,
   StacSearchItem,
+  ViewStateControl,
+  ViewStateControlOptions,
   ZarrLayerControl,
   ZarrLayerControlOptions,
   ZarrLayerEventHandler,
@@ -67,6 +76,14 @@ type ControlGridConstructor =
   (typeof import("maplibre-gl-components"))["ControlGrid"];
 type AddVectorControlConstructor =
   (typeof import("maplibre-gl-components"))["AddVectorControl"];
+type BookmarkControlConstructor =
+  (typeof import("maplibre-gl-components"))["BookmarkControl"];
+type MeasureControlConstructor =
+  (typeof import("maplibre-gl-components"))["MeasureControl"];
+type MinimapControlConstructor =
+  (typeof import("maplibre-gl-components"))["MinimapControl"];
+type ViewStateControlConstructor =
+  (typeof import("maplibre-gl-components"))["ViewStateControl"];
 type CogLayerControlConstructor =
   (typeof import("maplibre-gl-components"))["CogLayerControl"];
 type ColorbarGuiControlConstructor =
@@ -104,6 +121,7 @@ interface SplattingControlVisibilityState {
 
 interface ComponentsConstructors {
   AddVectorControl: AddVectorControlConstructor;
+  BookmarkControl: BookmarkControlConstructor;
   CogLayerControl: CogLayerControlConstructor;
   ColorbarGuiControl: ColorbarGuiControlConstructor;
   ControlGrid: ControlGridConstructor;
@@ -113,10 +131,13 @@ interface ComponentsConstructors {
   LegendGuiControl: LegendGuiControlConstructor;
   LidarControl: LidarControlConstructor;
   LidarLayerAdapter: LidarLayerAdapterConstructor;
+  MeasureControl: MeasureControlConstructor;
+  MinimapControl: MinimapControlConstructor;
   PMTilesLayerControl: PMTilesLayerControlConstructor;
   PrintControl: PrintControlConstructor;
   SearchControl: SearchControlConstructor;
   StacSearchControl: StacSearchControlConstructor;
+  ViewStateControl: ViewStateControlConstructor;
   ZarrLayerControl: ZarrLayerControlConstructor;
 }
 
@@ -125,6 +146,10 @@ const cogRasterControlPosition: GeoLibreMapControlPosition = "top-left";
 const flatGeobufControlPosition: GeoLibreMapControlPosition = "top-left";
 const pmtilesControlPosition: GeoLibreMapControlPosition = "top-left";
 const searchControlPosition: GeoLibreMapControlPosition = "top-right";
+const measureControlPosition: GeoLibreMapControlPosition = "top-left";
+const bookmarkControlPosition: GeoLibreMapControlPosition = "top-left";
+const minimapControlPosition: GeoLibreMapControlPosition = "bottom-left";
+const viewStateControlPosition: GeoLibreMapControlPosition = "bottom-right";
 const printControlPosition: GeoLibreMapControlPosition = "top-left";
 const stacSearchControlPosition: GeoLibreMapControlPosition = "top-left";
 const zarrControlPosition: GeoLibreMapControlPosition = "top-left";
@@ -242,6 +267,48 @@ const SEARCH_OPTIONS = {
   placeholder: "Search places...",
   width: 320,
 } satisfies SearchControlOptions;
+
+const MEASURE_OPTIONS = {
+  backgroundColor: "hsl(var(--popover))",
+  className: "geolibre-measure-control",
+  collapsed: false,
+  fontColor: "hsl(var(--popover-foreground))",
+  maxHeight: 520,
+  panelWidth: 260,
+  position: measureControlPosition,
+} satisfies MeasureControlOptions;
+
+const BOOKMARK_OPTIONS = {
+  backgroundColor: "hsl(var(--popover))",
+  className: "geolibre-bookmark-control",
+  collapsed: false,
+  fontColor: "hsl(var(--popover-foreground))",
+  maxHeight: 520,
+  panelWidth: 280,
+  position: bookmarkControlPosition,
+  storageKey: "geolibre-bookmarks",
+} satisfies BookmarkControlOptions;
+
+const MINIMAP_OPTIONS = {
+  className: "geolibre-minimap-control",
+  collapsed: false,
+  height: 180,
+  interactive: true,
+  position: minimapControlPosition,
+  width: 250,
+  zoomOffset: -4,
+} satisfies Omit<MinimapControlOptions, "style">;
+
+const VIEW_STATE_OPTIONS = {
+  backgroundColor: "hsl(var(--popover))",
+  className: "geolibre-view-state-control",
+  collapsed: false,
+  enableBBox: true,
+  fontColor: "hsl(var(--popover-foreground))",
+  maxHeight: 520,
+  panelWidth: 280,
+  position: viewStateControlPosition,
+} satisfies ViewStateControlOptions;
 
 const PRINT_OPTIONS = {
   backgroundColor: "hsl(var(--popover))",
@@ -480,6 +547,10 @@ let flatGeobufControl: AddVectorControl | null = null;
 let pmtilesControl: PMTilesLayerControl | null = null;
 let printControl: PrintControl | null = null;
 let searchControl: SearchControl | null = null;
+let measureControl: MeasureControl | null = null;
+let bookmarkControl: BookmarkControl | null = null;
+let minimapControl: MinimapControl | null = null;
+let viewStateControl: ViewStateControl | null = null;
 let stacSearchControl: StacSearchControl | null = null;
 let zarrControl: ZarrLayerControl | null = null;
 let colorbarControl: ColorbarGuiControl | null = null;
@@ -496,6 +567,11 @@ let geoTiffRasterOverlayMounted = false;
 let pmtilesControlMounted = false;
 let printControlMounted = false;
 let searchControlMounted = false;
+let measureControlMounted = false;
+let bookmarkControlMounted = false;
+let minimapControlMounted = false;
+let viewStateControlMounted = false;
+let minimapBasemapUnsubscribe: (() => void) | null = null;
 let stacSearchControlMounted = false;
 let zarrControlMounted = false;
 let colorbarControlMounted = false;
@@ -517,6 +593,14 @@ let componentsConstructorsPromise: Promise<ComponentsConstructors> | null =
   null;
 let searchPlacesPanelVisible = false;
 const searchPlacesPanelListeners = new Set<() => void>();
+let measurePanelVisible = false;
+const measurePanelListeners = new Set<() => void>();
+let bookmarkPanelVisible = false;
+const bookmarkPanelListeners = new Set<() => void>();
+let minimapPanelVisible = false;
+const minimapPanelListeners = new Set<() => void>();
+let viewStatePanelVisible = false;
+const viewStatePanelListeners = new Set<() => void>();
 let printPanelVisible = false;
 const printPanelListeners = new Set<() => void>();
 let printThemeObserver: MutationObserver | null = null;
@@ -879,6 +963,7 @@ const getComponentsConstructors = (): Promise<ComponentsConstructors> => {
   componentsConstructorsPromise ??= import("maplibre-gl-components").then(
     ({
       AddVectorControl: AddVectorControlClass,
+      BookmarkControl: BookmarkControlClass,
       CogLayerControl: CogLayerControlClass,
       ColorbarGuiControl: ColorbarGuiControlClass,
       ControlGrid: ControlGridClass,
@@ -888,13 +973,17 @@ const getComponentsConstructors = (): Promise<ComponentsConstructors> => {
       LegendGuiControl: LegendGuiControlClass,
       LidarControl: LidarControlClass,
       LidarLayerAdapter: LidarLayerAdapterClass,
+      MeasureControl: MeasureControlClass,
+      MinimapControl: MinimapControlClass,
       PMTilesLayerControl: PMTilesLayerControlClass,
       PrintControl: PrintControlClass,
       SearchControl: SearchControlClass,
       StacSearchControl: StacSearchControlClass,
+      ViewStateControl: ViewStateControlClass,
       ZarrLayerControl: ZarrLayerControlClass,
     }) => ({
       AddVectorControl: AddVectorControlClass,
+      BookmarkControl: BookmarkControlClass,
       CogLayerControl: CogLayerControlClass,
       ColorbarGuiControl: ColorbarGuiControlClass,
       ControlGrid: ControlGridClass,
@@ -904,10 +993,13 @@ const getComponentsConstructors = (): Promise<ComponentsConstructors> => {
       LegendGuiControl: LegendGuiControlClass,
       LidarControl: LidarControlClass,
       LidarLayerAdapter: LidarLayerAdapterClass,
+      MeasureControl: MeasureControlClass,
+      MinimapControl: MinimapControlClass,
       PMTilesLayerControl: PMTilesLayerControlClass,
       PrintControl: PrintControlClass,
       SearchControl: SearchControlClass,
       StacSearchControl: StacSearchControlClass,
+      ViewStateControl: ViewStateControlClass,
       ZarrLayerControl: ZarrLayerControlClass,
     }),
   );
@@ -967,6 +1059,10 @@ export const maplibreComponentsPlugin: GeoLibrePlugin = {
     teardownPMTilesControl(app);
     teardownPrintControl(app);
     teardownSearchControl(app);
+    teardownMeasureControl(app);
+    teardownBookmarkControl(app);
+    teardownMinimapControl(app);
+    teardownViewStateControl(app);
     teardownStacSearchControl(app);
     teardownZarrControl(app);
     teardownColorbarControl(app);
@@ -1369,6 +1465,78 @@ export function subscribeSearchPlacesPanel(listener: () => void): () => void {
   return () => searchPlacesPanelListeners.delete(listener);
 }
 
+// Standalone Measure panel, opened on demand from the Controls menu.
+export function openMeasurePanel(app: GeoLibreAppAPI): void {
+  void openStandaloneMeasureControl(app);
+}
+
+export function closeMeasurePanel(app: GeoLibreAppAPI): void {
+  teardownMeasureControl(app);
+}
+
+export function isMeasurePanelVisible(): boolean {
+  return measurePanelVisible;
+}
+
+export function subscribeMeasurePanel(listener: () => void): () => void {
+  measurePanelListeners.add(listener);
+  return () => measurePanelListeners.delete(listener);
+}
+
+// Standalone Bookmark panel, opened on demand from the Controls menu.
+export function openBookmarkPanel(app: GeoLibreAppAPI): void {
+  void openStandaloneBookmarkControl(app);
+}
+
+export function closeBookmarkPanel(app: GeoLibreAppAPI): void {
+  teardownBookmarkControl(app);
+}
+
+export function isBookmarkPanelVisible(): boolean {
+  return bookmarkPanelVisible;
+}
+
+export function subscribeBookmarkPanel(listener: () => void): () => void {
+  bookmarkPanelListeners.add(listener);
+  return () => bookmarkPanelListeners.delete(listener);
+}
+
+// Standalone Minimap control, toggled from the Controls menu.
+export function openMinimapPanel(app: GeoLibreAppAPI): void {
+  void openStandaloneMinimapControl(app);
+}
+
+export function closeMinimapPanel(app: GeoLibreAppAPI): void {
+  teardownMinimapControl(app);
+}
+
+export function isMinimapPanelVisible(): boolean {
+  return minimapPanelVisible;
+}
+
+export function subscribeMinimapPanel(listener: () => void): () => void {
+  minimapPanelListeners.add(listener);
+  return () => minimapPanelListeners.delete(listener);
+}
+
+// Standalone View State panel, toggled from the Controls menu.
+export function openViewStatePanel(app: GeoLibreAppAPI): void {
+  void openStandaloneViewStateControl(app);
+}
+
+export function closeViewStatePanel(app: GeoLibreAppAPI): void {
+  teardownViewStateControl(app);
+}
+
+export function isViewStatePanelVisible(): boolean {
+  return viewStatePanelVisible;
+}
+
+export function subscribeViewStatePanel(listener: () => void): () => void {
+  viewStatePanelListeners.add(listener);
+  return () => viewStatePanelListeners.delete(listener);
+}
+
 // The standalone Print panel exports the map via the maplibre-gl-components
 // PrintControl. It is opened on demand from the Project menu.
 export function openPrintPanel(app: GeoLibreAppAPI): void {
@@ -1441,6 +1609,10 @@ export function closeMaplibreComponentControls(app: GeoLibreAppAPI): void {
   teardownPMTilesControl(app);
   teardownPrintControl(app);
   teardownSearchControl(app);
+  teardownMeasureControl(app);
+  teardownBookmarkControl(app);
+  teardownMinimapControl(app);
+  teardownViewStateControl(app);
   teardownStacSearchControl(app);
   teardownZarrControl(app);
   teardownColorbarControl(app);
@@ -1609,6 +1781,168 @@ async function openStandaloneSearchControl(
     searchControl?.show();
     searchControl?.expand();
     setSearchPlacesPanelVisible(true);
+  }, 0);
+  return true;
+}
+
+async function openStandaloneMeasureControl(
+  app: GeoLibreAppAPI,
+): Promise<boolean> {
+  const { MeasureControl: MeasureControlClass } =
+    await getComponentsConstructors();
+
+  measureControl ??= createMeasureControl(MeasureControlClass, app);
+
+  if (!measureControlMounted) {
+    const added = app.addMapControl(measureControl, measureControlPosition);
+    if (!added) {
+      measureControl = null;
+      return false;
+    }
+    measureControlMounted = true;
+  }
+
+  setTimeout(() => {
+    // Guard against a teardown that nulled measureControl between addMapControl
+    // succeeding and this deferred callback firing, which would otherwise mark
+    // the panel visible even though the control no longer exists.
+    if (!measureControl) return;
+    measureControl.show();
+    measureControl.expand();
+    setMeasurePanelVisible(true);
+  }, 0);
+  return true;
+}
+
+async function openStandaloneBookmarkControl(
+  app: GeoLibreAppAPI,
+): Promise<boolean> {
+  const { BookmarkControl: BookmarkControlClass } =
+    await getComponentsConstructors();
+
+  bookmarkControl ??= createBookmarkControl(BookmarkControlClass, app);
+
+  if (!bookmarkControlMounted) {
+    const added = app.addMapControl(bookmarkControl, bookmarkControlPosition);
+    if (!added) {
+      bookmarkControl = null;
+      return false;
+    }
+    bookmarkControlMounted = true;
+  }
+
+  setTimeout(() => {
+    if (!bookmarkControl) return;
+    bookmarkControl.show();
+    bookmarkControl.expand();
+    setBookmarkPanelVisible(true);
+  }, 0);
+  return true;
+}
+
+async function openStandaloneMinimapControl(
+  app: GeoLibreAppAPI,
+): Promise<boolean> {
+  const { MinimapControl: MinimapControlClass } =
+    await getComponentsConstructors();
+
+  minimapControl ??= createMinimapControl(
+    MinimapControlClass,
+    app.getActiveBasemap(),
+    app,
+  );
+
+  if (!minimapControlMounted) {
+    const added = app.addMapControl(minimapControl, minimapControlPosition);
+    if (!added) {
+      minimapControl = null;
+      return false;
+    }
+    minimapControlMounted = true;
+    // MinimapControl has no setStyle method and is reused across reopens, so
+    // recreate it whenever the active basemap changes to avoid showing a stale
+    // style for the rest of the session.
+    minimapBasemapUnsubscribe ??= app.onBasemapChange(() => {
+      void refreshMinimapBasemap(app);
+    });
+  }
+
+  setTimeout(() => {
+    if (!minimapControl) return;
+    minimapControl.show();
+    minimapControl.expand();
+    setMinimapPanelVisible(true);
+  }, 0);
+  return true;
+}
+
+// Swap the mounted minimap for a fresh instance built with the current
+// basemap. MinimapControl bakes the style in at construction and exposes no
+// style setter, so a rebuild is the only way to follow a basemap change.
+async function refreshMinimapBasemap(app: GeoLibreAppAPI): Promise<void> {
+  if (!minimapControl || !minimapControlMounted) return;
+  const controlAtStart = minimapControl;
+  const { MinimapControl: MinimapControlClass } =
+    await getComponentsConstructors();
+  // Bail out if a concurrent refresh already rebuilt the control or a teardown
+  // ran while awaiting; otherwise rapid basemap switches could double-remove
+  // the just-added control and leave two minimap instances on the map.
+  if (
+    !minimapControl ||
+    !minimapControlMounted ||
+    minimapControl !== controlAtStart
+  ) {
+    return;
+  }
+
+  app.removeMapControl(minimapControl);
+  minimapControl = createMinimapControl(
+    MinimapControlClass,
+    app.getActiveBasemap(),
+    app,
+  );
+  const added = app.addMapControl(minimapControl, minimapControlPosition);
+  if (!added) {
+    // Also drop the basemap subscription: minimapControlMounted is now false,
+    // so without nulling the unsubscribe the `??=` in openStandaloneMinimapControl
+    // would never re-subscribe on a later reopen, silently disabling refresh.
+    minimapBasemapUnsubscribe?.();
+    minimapBasemapUnsubscribe = null;
+    minimapControl = null;
+    minimapControlMounted = false;
+    setMinimapPanelVisible(false);
+    return;
+  }
+
+  setTimeout(() => {
+    if (!minimapControl) return;
+    minimapControl.show();
+    minimapControl.expand();
+  }, 0);
+}
+
+async function openStandaloneViewStateControl(
+  app: GeoLibreAppAPI,
+): Promise<boolean> {
+  const { ViewStateControl: ViewStateControlClass } =
+    await getComponentsConstructors();
+
+  viewStateControl ??= createViewStateControl(ViewStateControlClass, app);
+
+  if (!viewStateControlMounted) {
+    const added = app.addMapControl(viewStateControl, viewStateControlPosition);
+    if (!added) {
+      viewStateControl = null;
+      return false;
+    }
+    viewStateControlMounted = true;
+  }
+
+  setTimeout(() => {
+    if (!viewStateControl) return;
+    viewStateControl.show();
+    viewStateControl.expand();
+    setViewStatePanelVisible(true);
   }, 0);
   return true;
 }
@@ -2063,6 +2397,158 @@ function createSearchControl(
   return control;
 }
 
+// The panel's close (X) / collapse button emits "collapse". Treat that as a
+// request to remove the control entirely so the in-panel close button and the
+// Controls-menu toggle stay in sync — otherwise a collapsed icon button lingers
+// on the map with no way to dismiss it. Teardown is deferred so it runs after
+// the control finishes emitting the event.
+function createMeasureControl(
+  MeasureControlClass: MeasureControlConstructor,
+  app: GeoLibreAppAPI,
+): MeasureControl {
+  const control = new MeasureControlClass(MEASURE_OPTIONS);
+  control.on("collapse", () => {
+    if (control !== measureControl) return;
+    setTimeout(() => {
+      if (control === measureControl) teardownMeasureControl(app);
+    }, 0);
+  });
+  return control;
+}
+
+function createBookmarkControl(
+  BookmarkControlClass: BookmarkControlConstructor,
+  app: GeoLibreAppAPI,
+): BookmarkControl {
+  const control = new BookmarkControlClass(BOOKMARK_OPTIONS);
+  control.on("collapse", () => {
+    if (control !== bookmarkControl) return;
+    setTimeout(() => {
+      if (control === bookmarkControl) teardownBookmarkControl(app);
+    }, 0);
+  });
+  routeBookmarkFileIoThroughHost(control, app);
+  return control;
+}
+
+/**
+ * The BookmarkControl's built-in Import/Export use a Blob `<a download>` and a
+ * hidden `<input type="file">`, which do not work inside the Tauri WebView.
+ * Override the control's instance file-I/O methods so the host's runtime-aware
+ * helpers (a native dialog under Tauri, a download/file-input on the web) are
+ * used instead. Falls back to the control's originals if the host does not
+ * provide the helpers.
+ */
+function routeBookmarkFileIoThroughHost(
+  control: BookmarkControl,
+  app: GeoLibreAppAPI,
+): void {
+  // `_exportToFile`/`_importFromFile` are private (underscore-prefixed) members
+  // of BookmarkControl as of maplibre-gl-components@0.20.1. If a future version
+  // renames them, the overrides below silently stop being called and file I/O
+  // regresses to the WebView-incompatible Blob/file-input path — so warn loudly
+  // to flag it when bumping the dependency.
+  const io = control as unknown as {
+    _exportToFile?: () => void;
+    _importFromFile?: () => void;
+    exportBookmarks: () => string;
+    importBookmarks: (bookmarks: MapBookmark[]) => unknown;
+  };
+  if (!io._exportToFile || !io._importFromFile) {
+    console.warn(
+      "BookmarkControl: _exportToFile/_importFromFile not found; Tauri-aware " +
+        "Import/Export overrides are inactive. Check maplibre-gl-components.",
+    );
+    return;
+  }
+  const originalExport = io._exportToFile.bind(control);
+  const originalImport = io._importFromFile.bind(control);
+  const dialogOptions = {
+    description: "Bookmarks",
+    extensions: ["json"],
+    mimeType: "application/json",
+  };
+
+  io._exportToFile = () => {
+    if (!app.exportTextFile) {
+      originalExport();
+      return;
+    }
+    app.exportTextFile("bookmarks.json", io.exportBookmarks(), dialogOptions);
+  };
+
+  io._importFromFile = () => {
+    if (!app.importTextFile) {
+      originalImport();
+      return;
+    }
+    app
+      .importTextFile(dialogOptions)
+      .then((text) => {
+        if (!text || control !== bookmarkControl) return;
+        let data: unknown;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          console.warn("BookmarkControl: failed to parse imported file");
+          return;
+        }
+        if (!Array.isArray(data)) {
+          console.warn("BookmarkControl: imported data is not an array");
+          return;
+        }
+        const valid = data.filter(
+          (bookmark): bookmark is MapBookmark =>
+            !!bookmark &&
+            typeof (bookmark as MapBookmark).name === "string" &&
+            Number.isFinite((bookmark as MapBookmark).lng) &&
+            Number.isFinite((bookmark as MapBookmark).lat) &&
+            Number.isFinite((bookmark as MapBookmark).zoom),
+        );
+        if (valid.length === 0) {
+          console.warn("BookmarkControl: no valid bookmarks found in file");
+          return;
+        }
+        io.importBookmarks(valid);
+      })
+      .catch((error) => {
+        console.warn("BookmarkControl: import failed", error);
+      });
+  };
+}
+
+function createMinimapControl(
+  MinimapControlClass: MinimapControlConstructor,
+  basemapStyleUrl: string,
+  app: GeoLibreAppAPI,
+): MinimapControl {
+  const control = new MinimapControlClass({
+    ...MINIMAP_OPTIONS,
+    style: basemapStyleUrl,
+  });
+  control.on("collapse", () => {
+    if (control !== minimapControl) return;
+    setTimeout(() => {
+      if (control === minimapControl) teardownMinimapControl(app);
+    }, 0);
+  });
+  return control;
+}
+
+function createViewStateControl(
+  ViewStateControlClass: ViewStateControlConstructor,
+  app: GeoLibreAppAPI,
+): ViewStateControl {
+  const control = new ViewStateControlClass(VIEW_STATE_OPTIONS);
+  control.on("collapse", () => {
+    if (control !== viewStateControl) return;
+    setTimeout(() => {
+      if (control === viewStateControl) teardownViewStateControl(app);
+    }, 0);
+  });
+  return control;
+}
+
 /**
  * Read the current GeoLibre theme from the `dark` class that the desktop app
  * toggles on the document element so the PrintControl panel can be forced to
@@ -2289,6 +2775,76 @@ function setSearchPlacesPanelVisible(visible: boolean): void {
   if (searchPlacesPanelVisible === visible) return;
   searchPlacesPanelVisible = visible;
   for (const listener of searchPlacesPanelListeners) {
+    listener();
+  }
+}
+
+function teardownMeasureControl(app: GeoLibreAppAPI): void {
+  if (measureControl && measureControlMounted) {
+    app.removeMapControl(measureControl);
+  }
+  measureControl = null;
+  measureControlMounted = false;
+  setMeasurePanelVisible(false);
+}
+
+function setMeasurePanelVisible(visible: boolean): void {
+  if (measurePanelVisible === visible) return;
+  measurePanelVisible = visible;
+  for (const listener of measurePanelListeners) {
+    listener();
+  }
+}
+
+function teardownBookmarkControl(app: GeoLibreAppAPI): void {
+  if (bookmarkControl && bookmarkControlMounted) {
+    app.removeMapControl(bookmarkControl);
+  }
+  bookmarkControl = null;
+  bookmarkControlMounted = false;
+  setBookmarkPanelVisible(false);
+}
+
+function setBookmarkPanelVisible(visible: boolean): void {
+  if (bookmarkPanelVisible === visible) return;
+  bookmarkPanelVisible = visible;
+  for (const listener of bookmarkPanelListeners) {
+    listener();
+  }
+}
+
+function teardownMinimapControl(app: GeoLibreAppAPI): void {
+  minimapBasemapUnsubscribe?.();
+  minimapBasemapUnsubscribe = null;
+  if (minimapControl && minimapControlMounted) {
+    app.removeMapControl(minimapControl);
+  }
+  minimapControl = null;
+  minimapControlMounted = false;
+  setMinimapPanelVisible(false);
+}
+
+function setMinimapPanelVisible(visible: boolean): void {
+  if (minimapPanelVisible === visible) return;
+  minimapPanelVisible = visible;
+  for (const listener of minimapPanelListeners) {
+    listener();
+  }
+}
+
+function teardownViewStateControl(app: GeoLibreAppAPI): void {
+  if (viewStateControl && viewStateControlMounted) {
+    app.removeMapControl(viewStateControl);
+  }
+  viewStateControl = null;
+  viewStateControlMounted = false;
+  setViewStatePanelVisible(false);
+}
+
+function setViewStatePanelVisible(visible: boolean): void {
+  if (viewStatePanelVisible === visible) return;
+  viewStatePanelVisible = visible;
+  for (const listener of viewStatePanelListeners) {
     listener();
   }
 }
