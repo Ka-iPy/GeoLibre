@@ -3,6 +3,7 @@ import type { FeatureCollection } from "geojson";
 import type { MapController, MapDiagnosticEvent } from "@geolibre/map";
 import { MapCanvas } from "@geolibre/map";
 import {
+  addRasterToMap,
   endLayerGeometryEdit,
   getGeometryEditTargetLayerId,
   restoreRasterLayers,
@@ -26,8 +27,11 @@ import {
 import { runSqlQuery } from "../../lib/sql-workspace";
 import {
   isTauri,
+  loadDroppedRasterFiles,
+  loadDroppedRasterPaths,
   loadDroppedVectorFiles,
   loadDroppedVectorPaths,
+  type DroppedRaster,
 } from "../../lib/tauri-io";
 import {
   createAppAPI,
@@ -90,6 +94,20 @@ const VectorToolsDialog = lazy(() =>
       console.error("Failed to load VectorToolsDialog", error);
       const Fallback = (() =>
         null) as unknown as typeof import("../processing/VectorToolsDialog").VectorToolsDialog;
+      return { default: Fallback };
+    }),
+);
+
+const RasterToolsDialog = lazy(() =>
+  import("../processing/RasterToolsDialog")
+    .then((module) => ({
+      default: module.RasterToolsDialog,
+    }))
+    .catch((error) => {
+      // Same chunk-load fallback rationale as ProcessingDialog above.
+      console.error("Failed to load RasterToolsDialog", error);
+      const Fallback = (() =>
+        null) as unknown as typeof import("../processing/RasterToolsDialog").RasterToolsDialog;
       return { default: Fallback };
     }),
 );
@@ -395,17 +413,36 @@ export function DesktopShell({
     [addGeoJsonLayer],
   );
 
-  const finishVectorDrop = useCallback(
-    (importedLayers: ImportedVectorLayer[]) => {
-      if (!importedLayers.length) {
-        throw new Error("Drop a supported vector file.");
+  const addDroppedRasters = useCallback(
+    async (rasters: DroppedRaster[]): Promise<number> => {
+      if (!rasters.length) return 0;
+      const appAPI = createAppAPI(mapControllerRef);
+      for (const raster of rasters) {
+        await addRasterToMap(appAPI, raster.source, { name: raster.name });
       }
-      addImportedVectorLayers(importedLayers);
-      setDropMessage(
-        `Added ${importedLayers.length} vector layer${
-          importedLayers.length === 1 ? "" : "s"
-        }.`,
-      );
+      return rasters.length;
+    },
+    [],
+  );
+
+  const finishDrop = useCallback(
+    (importedLayers: ImportedVectorLayer[], rasterCount: number) => {
+      if (!importedLayers.length && !rasterCount) {
+        throw new Error("Drop a supported vector or raster file.");
+      }
+      if (importedLayers.length) addImportedVectorLayers(importedLayers);
+      const parts: string[] = [];
+      if (importedLayers.length) {
+        parts.push(
+          `${importedLayers.length} vector layer${
+            importedLayers.length === 1 ? "" : "s"
+          }`,
+        );
+      }
+      if (rasterCount) {
+        parts.push(`${rasterCount} raster layer${rasterCount === 1 ? "" : "s"}`);
+      }
+      setDropMessage(`Added ${parts.join(" and ")}.`);
     },
     [addImportedVectorLayers],
   );
@@ -432,10 +469,14 @@ export function DesktopShell({
 
           setIsDraggingFiles(false);
           setDropError(null);
-          setDropMessage("Importing vector data...");
+          setDropMessage("Importing data...");
 
           try {
-            finishVectorDrop(await loadDroppedVectorPaths(event.payload.paths));
+            const paths = event.payload.paths;
+            const rasterCount = await addDroppedRasters(
+              await loadDroppedRasterPaths(paths),
+            );
+            finishDrop(await loadDroppedVectorPaths(paths), rasterCount);
           } catch (error) {
             setDropMessage(null);
             setDropError(
@@ -463,7 +504,7 @@ export function DesktopShell({
       disposed = true;
       unlisten?.();
     };
-  }, [clearDropMessageLater, finishVectorDrop]);
+  }, [clearDropMessageLater, finishDrop, addDroppedRasters]);
 
   const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (!hasDroppedFiles(event)) return;
@@ -492,13 +533,14 @@ export function DesktopShell({
       dragDepthRef.current = 0;
       setIsDraggingFiles(false);
       setDropError(null);
-      setDropMessage("Importing vector data...");
+      setDropMessage("Importing data...");
 
       try {
-        const importedLayers = await loadDroppedVectorFiles(
-          event.dataTransfer.files,
+        const files = event.dataTransfer.files;
+        const rasterCount = await addDroppedRasters(
+          loadDroppedRasterFiles(files),
         );
-        finishVectorDrop(importedLayers);
+        finishDrop(await loadDroppedVectorFiles(files), rasterCount);
       } catch (error) {
         setDropMessage(null);
         setDropError(
@@ -508,7 +550,7 @@ export function DesktopShell({
         clearDropMessageLater();
       }
     },
-    [clearDropMessageLater, finishVectorDrop],
+    [clearDropMessageLater, finishDrop, addDroppedRasters],
   );
 
   const startLayerPanelResize = useCallback(
@@ -720,6 +762,9 @@ export function DesktopShell({
         <VectorToolsDialog mapControllerRef={mapControllerRef} />
       </Suspense>
       <Suspense fallback={null}>
+        <RasterToolsDialog />
+      </Suspense>
+      <Suspense fallback={null}>
         <SqlWorkspaceDialog />
       </Suspense>
       <div
@@ -729,7 +774,7 @@ export function DesktopShell({
       {isDraggingFiles ? (
         <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-sm">
           <div className="rounded-md border bg-background px-4 py-3 text-sm font-medium shadow-lg">
-            Drop vector files to add layers
+            Drop vector or raster files to add layers
           </div>
         </div>
       ) : null}
