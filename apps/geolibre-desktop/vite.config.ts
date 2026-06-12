@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { createRequire } from "node:module";
 import path from "node:path";
 import type {
   RollupLog,
@@ -19,6 +20,62 @@ const APP_BASE = process.env.GEOLIBRE_APP_BASE;
 const APP_VERSION = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8"),
 ).version as string;
+
+// The embedded (Jupyter wheel) build sets GEOLIBRE_PGLITE_CDN=1 so the ~25 MB
+// PGlite + PostGIS bundle is fetched from jsDelivr at runtime instead of vendored
+// into the wheel. Web and desktop builds keep bundling it (offline-capable). The
+// CDN URLs are pinned to the installed versions so they cannot drift from the
+// lockfile; PGlite resolves its own .wasm/.data/postgis.tar relative to these.
+const PGLITE_CDN = process.env.GEOLIBRE_PGLITE_CDN === "1";
+const pgliteCdnRequire = createRequire(import.meta.url);
+// The ESM entry of a package's manifest. Prefer the `module` field and the
+// `import` condition of `exports` (both point at the ESM build); never fall back
+// to `main`, which is the CJS entry (`dist/index.cjs` for PGlite) and would
+// break the jsDelivr `import()` at runtime. Falls back to `dist/index.js`, the
+// historical PGlite layout, if neither is declared.
+function esmEntry(manifest: Record<string, unknown>): string {
+  if (typeof manifest.module === "string") return manifest.module;
+  const exportsRoot = (manifest.exports as Record<string, unknown> | undefined)?.[
+    "."
+  ];
+  const importEntry = (exportsRoot as Record<string, unknown> | undefined)
+    ?.import;
+  const importDefault =
+    typeof importEntry === "string"
+      ? importEntry
+      : (importEntry as Record<string, unknown> | undefined)?.default;
+  if (typeof importDefault === "string") return importDefault;
+  return "dist/index.js";
+}
+// The PGlite packages do not expose "./package.json" via their `exports`, so
+// resolve the package entry and walk up to its package.json to read the
+// installed version and ESM entry path (so the CDN URL tracks the lockfile and
+// any future dist restructuring instead of hardcoding `/dist/index.js`).
+function installedPackage(pkg: string): { version: string; entry: string } {
+  let dir = path.dirname(pgliteCdnRequire.resolve(pkg));
+  while (dir !== path.dirname(dir)) {
+    const manifest = path.join(dir, "package.json");
+    try {
+      const parsed = JSON.parse(readFileSync(manifest, "utf8"));
+      if (parsed.name === pkg) {
+        return { version: parsed.version as string, entry: esmEntry(parsed) };
+      }
+    } catch {
+      // Not this directory's package.json; keep walking up.
+    }
+    dir = path.dirname(dir);
+  }
+  throw new Error(`Could not resolve installed version of ${pkg}`);
+}
+function pgliteCdnUrl(pkg: string): string | null {
+  if (!PGLITE_CDN) return null;
+  const { version, entry } = installedPackage(pkg);
+  // Normalize a leading "./" from the manifest entry into the jsDelivr path.
+  const entryPath = entry.replace(/^\.?\//, "");
+  return `https://cdn.jsdelivr.net/npm/${pkg}@${version}/${entryPath}`;
+}
+const PGLITE_CDN_URL = pgliteCdnUrl("@electric-sql/pglite");
+const PGLITE_POSTGIS_CDN_URL = pgliteCdnUrl("@electric-sql/pglite-postgis");
 const WMS_PROXY_PATH = "/__geolibre_wms_proxy";
 const WFS_PROXY_PATH = "/__geolibre_wfs_proxy";
 const GPX_PROXY_PATH = "/__geolibre_gpx_proxy";
@@ -234,6 +291,23 @@ function isDuckDbWorkerRequest(pathname: string): boolean {
   );
 }
 
+// Embed build only: redirect imports of `./pglite-loader` to the CDN variant so
+// the bundled PGlite/PostGIS packages (and their ~25 MB of WASM/data/postgis.tar)
+// are removed from the graph entirely. A bundler emits a chunk for every parsed
+// `import()` regardless of dead-code reachability, so swapping the whole module
+// is the only reliable way to keep those assets out of the wheel.
+function pgliteCdnLoaderPlugin(): Plugin {
+  const cdnLoader = path.resolve(__dirname, "src/lib/pglite-loader.cdn.ts");
+  return {
+    name: "geolibre-pglite-cdn-loader",
+    enforce: "pre",
+    resolveId(source) {
+      // Match `./pglite-loader` (and `.ts`) but never `pglite-loader.cdn`.
+      return /(?:^|\/)pglite-loader(?:\.ts)?$/.test(source) ? cdnLoader : null;
+    },
+  };
+}
+
 function projectUrlQueryPlugin(): Plugin {
   return {
     name: "geolibre-project-url-query",
@@ -321,6 +395,7 @@ async function proxyBinaryRequest(
 export default defineConfig({
   base: APP_BASE,
   plugins: [
+    ...(PGLITE_CDN ? [pgliteCdnLoaderPlugin()] : []),
     stripDuckDbWorkerSourcemapPlugin(),
     projectUrlQueryPlugin(),
     bundledPlugins(path.resolve(__dirname, "public/plugins")),
@@ -338,6 +413,8 @@ export default defineConfig({
   clearScreen: false,
   define: {
     __GEOLIBRE_VERSION__: JSON.stringify(APP_VERSION),
+    __PGLITE_CDN_URL__: JSON.stringify(PGLITE_CDN_URL),
+    __PGLITE_POSTGIS_CDN_URL__: JSON.stringify(PGLITE_POSTGIS_CDN_URL),
   },
   server: {
     port: 5173,
