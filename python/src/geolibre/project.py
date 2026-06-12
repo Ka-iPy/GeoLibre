@@ -13,15 +13,21 @@ import ipaddress
 import json
 import socket
 import uuid
+import warnings
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, build_opener
 
 from .basemaps import DEFAULT_BASEMAP
 
 PROJECT_VERSION = "0.1.0"
+
+# Characters JavaScript's encodeURIComponent leaves unescaped on top of the
+# always-unreserved set (alphanumerics and ``-_.~``), so _append_query produces
+# byte-identical query strings to the app's appendQuery helper.
+_ENCODE_URI_SAFE = "!*'()"
 
 # Cap GeoJSON inputs (URL fetches and local files alike) so a huge source cannot
 # silently exhaust kernel memory when inlined into the project.
@@ -301,6 +307,459 @@ def cog_layer(
         "sourceKind": "maplibre-gl-raster",
     }
     layer["sourcePath"] = url
+    return layer
+
+
+def _append_query(endpoint: str, params: list[tuple[str, str]]) -> str:
+    """Append query params to a URL, mirroring ``appendQuery`` in the app.
+
+    Matches ``AddDataDialog.tsx``/``layer-refresh.ts``: an existing ``?`` or
+    ``&`` is respected, values are URL-encoded the way ``encodeURIComponent``
+    does (so ``!*'()`` and the unreserved ``-_.~`` stay literal), and the
+    ``{bbox-epsg-3857}`` placeholder is preserved verbatim so the raster source
+    can substitute the tile bounding box at request time.
+
+    Args:
+        endpoint: Base service URL (may already carry a query string).
+        params: Ordered ``(key, value)`` pairs to append.
+
+    Returns:
+        The endpoint with the encoded query string appended.
+    """
+    # Split off any fragment first: a query string must precede the "#", so
+    # appending after it would push the params past the fragment where the
+    # server never sees them. (Service endpoints rarely carry one, but this is
+    # cheap to handle correctly.)
+    base, sep, fragment = endpoint.partition("#")
+    if "?" in base:
+        separator = "" if base.endswith(("?", "&")) else "&"
+    else:
+        separator = "?"
+    query = "&".join(
+        f"{quote(key, safe=_ENCODE_URI_SAFE)}="
+        + (
+            value
+            if value == "{bbox-epsg-3857}"
+            else quote(value, safe=_ENCODE_URI_SAFE)
+        )
+        for key, value in params
+    )
+    return f"{base}{separator}{query}{sep}{fragment}"
+
+
+def wms_layer(
+    name: str,
+    endpoint: str,
+    layers: str,
+    *,
+    styles: str = "",
+    image_format: str = "image/png",
+    transparent: bool = True,
+    tile_size: int = 256,
+    **style: Any,
+) -> dict[str, Any]:
+    """Build a WMS layer rendered as tiled raster (a WMS GetMap request).
+
+    The GetMap tile template is built exactly as ``createWmsTileUrl`` in the Add
+    Data dialog, so the core raster sync renders it identically to a layer added
+    through the UI. The ``{bbox-epsg-3857}`` placeholder is substituted per tile.
+
+    Args:
+        name: Layer display name.
+        endpoint: WMS service endpoint (the GetMap base URL).
+        layers: Comma-separated WMS layer name(s).
+        styles: Comma-separated WMS style name(s) (empty for the default).
+        image_format: WMS image format (e.g. ``"image/png"``).
+        transparent: Whether to request transparent tiles.
+        tile_size: Tile size in pixels.
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+    """
+    tile_url = _append_query(
+        endpoint,
+        [
+            ("SERVICE", "WMS"),
+            ("REQUEST", "GetMap"),
+            ("VERSION", "1.1.1"),
+            ("LAYERS", layers),
+            ("STYLES", styles),
+            ("FORMAT", image_format),
+            ("TRANSPARENT", "TRUE" if transparent else "FALSE"),
+            ("SRS", "EPSG:3857"),
+            ("BBOX", "{bbox-epsg-3857}"),
+            ("WIDTH", str(tile_size)),
+            ("HEIGHT", str(tile_size)),
+        ],
+    )
+    layer = _layer_base(name, "wms", **style)
+    layer["source"] = {
+        "type": "raster",
+        "tiles": [tile_url],
+        "tileSize": tile_size,
+        "url": endpoint,
+        "layers": layers,
+        "styles": styles,
+        "format": image_format,
+        "transparent": transparent,
+    }
+    layer["metadata"] = {"service": "wms"}
+    return layer
+
+
+def wmts_layer(
+    name: str,
+    url: str,
+    *,
+    tile_size: int = 256,
+    **style: Any,
+) -> dict[str, Any]:
+    """Build a WMTS layer from a tile URL template.
+
+    Args:
+        name: Layer display name.
+        url: A WMTS tile URL template in WMTS REST ``{z}/{y}/{x}`` order (row
+            before column — unlike XYZ templates in ``tile_layer``/``add_tile_layer``,
+            which use ``{z}/{x}/{y}``).
+        tile_size: Tile size in pixels.
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+    """
+    layer = _layer_base(name, "wmts", **style)
+    layer["source"] = {
+        "type": "raster",
+        "tiles": [url],
+        "tileSize": tile_size,
+        "url": url,
+    }
+    layer["metadata"] = {"service": "wmts"}
+    return layer
+
+
+def wfs_getfeature_url(
+    endpoint: str,
+    type_name: str,
+    *,
+    version: str = "2.0.0",
+    output_format: str = "application/json",
+    srs_name: str = "EPSG:4326",
+    max_features: int | None = None,
+) -> str:
+    """Build a WFS GetFeature URL, mirroring ``createWfsGetFeatureUrl``.
+
+    WFS 2.x uses ``typeNames``/``count`` while WFS 1.x uses
+    ``typeName``/``maxFeatures``. The endpoint is expected to return GeoJSON when
+    ``output_format`` is ``application/json`` so the result can be inlined as a
+    GeoJSON layer.
+
+    Args:
+        endpoint: WFS service endpoint.
+        type_name: WFS feature type name (e.g. ``"topp:states"``).
+        version: WFS protocol version (e.g. ``"2.0.0"`` or ``"1.1.0"``).
+        output_format: Requested output format.
+        srs_name: Spatial reference of the response.
+        max_features: Optional cap on the number of returned features.
+
+    Returns:
+        The fully-formed GetFeature request URL.
+    """
+    is_wfs2 = version.startswith("2")
+    params: list[tuple[str, str]] = [
+        ("service", "WFS"),
+        ("request", "GetFeature"),
+        ("version", version),
+        ("typeNames" if is_wfs2 else "typeName", type_name),
+        ("outputFormat", output_format),
+    ]
+    if srs_name:
+        params.append(("srsName", srs_name))
+    if max_features is not None:
+        params.append(("count" if is_wfs2 else "maxFeatures", str(max_features)))
+    return _append_query(endpoint, params)
+
+
+def vector_layer(
+    name: str,
+    url: str,
+    *,
+    render_mode: str = "geojson",
+    data_format: str | None = None,
+    source_layer: str | None = None,
+    picker: bool | None = None,
+    ingest_mode: str | None = None,
+    **style: Any,
+) -> dict[str, Any]:
+    """Build a vector layer backed by the maplibre-gl-vector control.
+
+    Covers any GDAL-readable vector served from a URL (GeoParquet, FlatGeobuf,
+    zipped Shapefile, GeoJSON, ...). The shape matches what ``restoreVectorLayers``
+    replays from a saved project: it reads ``source.url`` and the persisted
+    ``metadata.vectorState`` and re-runs ``VectorControl.addData`` on load, so the
+    in-browser DuckDB-backed control fetches and renders the data.
+
+    Args:
+        name: Layer display name.
+        url: URL of the vector dataset.
+        render_mode: ``"geojson"`` (load into a GeoJSON source) or ``"tiles"``
+            (stream as vector tiles).
+        data_format: Optional GDAL format hint (e.g. ``"parquet"``,
+            ``"flatgeobuf"``); the control auto-detects when omitted.
+        source_layer: Optional source/container layer name for multi-layer files.
+        picker: Optional toggle for the control's feature-inspection popup.
+        ingest_mode: Optional ingest strategy, ``"table"`` or ``"stream"``.
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+
+    Raises:
+        ValueError: If ``render_mode`` or ``ingest_mode`` is not a valid value.
+    """
+    if render_mode not in ("geojson", "tiles"):
+        raise ValueError("render_mode must be 'geojson' or 'tiles'")
+    if ingest_mode is not None and ingest_mode not in ("table", "stream"):
+        raise ValueError("ingest_mode must be 'table' or 'stream'")
+    is_tiles = render_mode == "tiles"
+    layer = _layer_base(name, "vector-tiles" if is_tiles else "geojson", **style)
+    layer["source"] = {"type": "vector" if is_tiles else "geojson", "url": url}
+    vector_state: dict[str, Any] = {"renderMode": render_mode}
+    if data_format:
+        vector_state["format"] = data_format
+    if source_layer:
+        vector_state["sourceLayer"] = source_layer
+    if picker is not None:
+        vector_state["picker"] = picker
+    if ingest_mode is not None:
+        vector_state["ingestMode"] = ingest_mode
+    layer["metadata"] = {
+        "sourceKind": "maplibre-gl-vector",
+        "externalNativeLayer": True,
+        # The control owns its layers' paint; the core sync must not re-apply it.
+        "controlOwnsPaint": True,
+        "identifiable": False,
+        # Empty is safe here (unlike pmtiles_layer): restoreVectorLayers detects
+        # the layer via isVectorControlStoreLayer (sourceKind + externalNativeLayer,
+        # not list length) and loads it through the control's async addData;
+        # syncVectorLayersToStore then fills in the real nativeLayerIds.
+        # Caveat: render_mode="tiles" yields a type:"vector-tiles" layer that,
+        # before the control loads, briefly falls through to syncVectorTileLayer
+        # until that store sync replaces these ids.
+        "nativeLayerIds": [],
+        "sourceIds": [f"{layer['id']}-source"],
+        "vectorSource": "url",
+        "vectorState": vector_state,
+    }
+    layer["sourcePath"] = url
+    return layer
+
+
+def vector_tiles_layer(
+    name: str,
+    url: str,
+    *,
+    source_layers: list[str] | None = None,
+    source_layer: str | None = None,
+    **style: Any,
+) -> dict[str, Any]:
+    """Build a vector tile layer from a TileJSON endpoint.
+
+    Rendered directly by the core layer sync (no control), which reads
+    ``source.url`` as a TileJSON URL and styles each named source layer.
+
+    Args:
+        name: Layer display name.
+        url: TileJSON endpoint for the vector tileset.
+        source_layers: Source-layer names to render (for multi-layer tilesets).
+        source_layer: A single source-layer name (convenience for the common
+            single-layer case).
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+    """
+    layer = _layer_base(name, "vector-tiles", **style)
+    source: dict[str, Any] = {"type": "vector", "url": url}
+    if source_layers:
+        if source_layer is not None:
+            warnings.warn(
+                "source_layer is ignored when source_layers is provided; pass "
+                "one or the other.",
+                stacklevel=2,
+            )
+        source["sourceLayers"] = list(source_layers)
+    elif source_layer:
+        source["sourceLayer"] = source_layer
+    layer["source"] = source
+    return layer
+
+
+def pmtiles_layer(
+    name: str,
+    url: str,
+    *,
+    tile_type: str = "vector",
+    source_layers: list[str] | None = None,
+    **style: Any,
+) -> dict[str, Any]:
+    """Build a PMTiles layer from a ``.pmtiles`` URL.
+
+    The core sync registers the ``pmtiles://`` protocol and prepends it to the
+    URL automatically, so a plain ``https://`` URL is accepted here.
+
+    Args:
+        name: Layer display name.
+        url: URL of the ``.pmtiles`` archive.
+        tile_type: ``"vector"`` or ``"raster"``.
+        source_layers: Vector source-layer names to render (vector tiles only).
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+
+    Raises:
+        ValueError: If ``tile_type`` is not ``"vector"`` or ``"raster"``.
+    """
+    if tile_type not in ("vector", "raster"):
+        raise ValueError("tile_type must be 'vector' or 'raster'")
+    source_layers = list(source_layers or [])
+    layer = _layer_base(name, "pmtiles", **style)
+    source_id = layer["id"]
+    layer["source"] = {
+        "type": "raster" if tile_type == "raster" else "vector",
+        "url": url,
+        "sourceId": source_id,
+        "sourceLayers": source_layers,
+        "tileType": tile_type,
+    }
+    # nativeLayerIds must be non-empty: isExternalNativeLayer() in layer-sync.ts
+    # gates on its length, and a "pmtiles" layer has no fallback dispatch in
+    # syncLayer, so an empty list means the source/layers are never added.
+    # ensurePMTilesExternalLayer tolerates these placeholders — for raster it
+    # matches the `${sourceId}-raster` fallback it would otherwise compute; for
+    # vector getPMTilesNativeLayerId derives the real per-source-layer ids.
+    native_layer_ids = [f"{source_id}-raster"] if tile_type == "raster" else [source_id]
+    layer["metadata"] = {
+        "sourceKind": "pmtiles-url",
+        "externalNativeLayer": True,
+        "sourceId": source_id,
+        "tileType": tile_type,
+        "sourceLayers": source_layers,
+        "nativeLayerIds": native_layer_ids,
+    }
+    layer["sourcePath"] = url
+    return layer
+
+
+def three_d_tiles_layer(
+    name: str,
+    url: str,
+    *,
+    altitude_offset: float = 0,
+    request_headers: dict[str, str] | None = None,
+    **style: Any,
+) -> dict[str, Any]:
+    """Build a 3D Tiles layer from a ``tileset.json`` URL.
+
+    The shape matches what ``restoreThreeDTilesLayers`` replays from a saved
+    project, so the deck.gl 3D-tiles overlay is rebuilt on load.
+
+    Args:
+        name: Layer display name.
+        url: URL of the 3D Tiles ``tileset.json``.
+        altitude_offset: Vertical offset applied to the tileset, in meters.
+        request_headers: Optional request headers (e.g. an auth token). Stored in
+            the project file, so avoid persisting secrets you do not want saved.
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+    """
+    layer = _layer_base(name, "3d-tiles", **style)
+    source_id = layer["id"]
+    source: dict[str, Any] = {
+        "type": "3d-tiles",
+        "url": url,
+        "sourceId": source_id,
+        "altitudeOffset": altitude_offset,
+    }
+    if request_headers:
+        source["requestHeaders"] = request_headers
+    layer["source"] = source
+    layer["metadata"] = {
+        "sourceKind": "3d-tiles-url",
+        "externalNativeLayer": True,
+        "customLayerType": "3d-tiles",
+        "identifiable": False,
+        "sourceId": source_id,
+        "nativeLayerIds": [source_id],
+        "altitudeOffset": altitude_offset,
+        "panelCollapsed": True,
+        "status": "loading",
+    }
+    layer["sourcePath"] = url
+    return layer
+
+
+def video_layer(
+    name: str,
+    urls: list[str],
+    coordinates: list[list[float]],
+    **style: Any,
+) -> dict[str, Any]:
+    """Build a georeferenced video layer.
+
+    Args:
+        name: Layer display name.
+        urls: One or more video URLs (format fallbacks, e.g. MP4 then WebM).
+        coordinates: Four ``[lng, lat]`` corners in top-left, top-right,
+            bottom-right, bottom-left order.
+        **style: Style overrides merged into the default layer style.
+
+    Returns:
+        A layer dict for the project's ``layers`` array.
+
+    Raises:
+        ValueError: If ``urls`` is empty, any URL is not ``https://`` (the
+            browser's ``media-src`` CSP blocks ``http://``), or ``coordinates``
+            is not four ``[lng, lat]`` pairs.
+    """
+    if not urls:
+        raise ValueError("video_layer requires at least one non-empty URL")
+    # Validate strictly rather than silently dropping a None/non-string entry,
+    # which would mask a malformed call and build a layer with fewer URLs.
+    invalid = [u for u in urls if not (isinstance(u, str) and u)]
+    if invalid:
+        raise ValueError(
+            f"video_layer: every URL must be a non-empty string; got {invalid!r}"
+        )
+    clean_urls = list(urls)
+    if any(not u.lower().startswith("https://") for u in clean_urls):
+        raise ValueError(
+            "Video URLs must start with https:// (the browser CSP blocks http://)"
+        )
+    if len(coordinates) != 4 or any(len(corner) != 2 for corner in coordinates):
+        raise ValueError(
+            "coordinates must be four [lng, lat] corners (top-left, top-right, "
+            "bottom-right, bottom-left)"
+        )
+    lngs = [float(c[0]) for c in coordinates]
+    lats = [float(c[1]) for c in coordinates]
+    layer = _layer_base(name, "video", **style)
+    layer["source"] = {
+        "type": "video",
+        "urls": clean_urls,
+        "coordinates": [[lng, lat] for lng, lat in zip(lngs, lats)],
+    }
+    # Persist the corner bbox ([west, south, east, north]) so "Zoom to layer"
+    # works — a video source exposes no bounds for fitLayer to fall back on.
+    layer["metadata"] = {
+        "sourceKind": "video-url",
+        "bounds": [min(lngs), min(lats), max(lngs), max(lats)],
+    }
+    layer["sourcePath"] = clean_urls[0]
     return layer
 
 
