@@ -149,8 +149,8 @@ function loadQueryHistory(): string[] {
     );
     return Array.isArray(parsed)
       ? parsed
-          .filter((entry): entry is string => typeof entry === "string")
-          .slice(0, MAX_HISTORY_ENTRIES)
+        .filter((entry): entry is string => typeof entry === "string")
+        .slice(0, MAX_HISTORY_ENTRIES)
       : [];
   } catch {
     return [];
@@ -350,7 +350,9 @@ export function SqlWorkspaceDialog() {
             ) : (
               <>
                 Run DuckDB SQL against loaded layers, files, and URLs. The spatial
-                extension is loaded, so {"ST_*"} functions are available.
+                extension is loaded, so {"ST_*"} functions are available. Cloud
+                URLs ({"s3://"}, {"gs://"}, {"az://"}) are supported for public
+                data.
               </>
             )}
           </DialogDescription>
