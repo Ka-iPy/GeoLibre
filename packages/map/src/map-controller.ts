@@ -249,6 +249,12 @@ export class MapController {
       renderWorldCopies: mapPreferences.renderWorldCopies,
       attributionControl: false,
       maplibreLogo: false,
+      // preserveDrawingBuffer must stay true: the Print Layout composer and any
+      // future export feature reads the canvas via drawImage / toDataURL outside
+      // of a render callback. Removing this causes blank captures on browsers
+      // that discard the drawing buffer after compositing (most mobile GPUs).
+      // Trade-off: adds one extra framebuffer copy per frame on tiled renderers.
+      canvasContextAttributes: { preserveDrawingBuffer: true },
     });
     // The constructor options above already apply the static constraints.
     // The transform constraint is installed by the MapCanvas effect that
