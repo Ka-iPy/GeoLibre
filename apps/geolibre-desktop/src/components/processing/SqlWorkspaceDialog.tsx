@@ -20,6 +20,7 @@ import {
   Play,
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   exportBinaryVectorLayer,
   type BinaryVectorExportResult,
@@ -200,6 +201,8 @@ export function SqlWorkspaceDialog() {
   const layers = useAppStore((s) => s.layers);
   const addGeoJsonLayer = useAppStore((s) => s.addGeoJsonLayer);
 
+  const { t } = useTranslation();
+
   const [engine, setEngine] = useState<SqlEngine>(loadEngine);
   const [sql, setSql] = useState(SAMPLE_QUERY);
   const [running, setRunning] = useState(false);
@@ -339,22 +342,11 @@ export function SqlWorkspaceDialog() {
     <Dialog open={open} onOpenChange={setSqlWorkspaceOpen}>
       <DialogContent className="max-w-4xl">
         <DialogHeader>
-          <DialogTitle>SQL Workspace</DialogTitle>
+          <DialogTitle>{t("toolbar.command.sqlWorkspace")}</DialogTitle>
           <DialogDescription>
-            {engine === "postgis" ? (
-              <>
-                Run PostGIS SQL against loaded layers. The PostGIS extension is
-                loaded, so {"ST_*"} functions are available. The first run loads
-                a ~19 MB database engine.
-              </>
-            ) : (
-              <>
-                Run DuckDB SQL against loaded layers, files, and URLs. The spatial
-                extension is loaded, so {"ST_*"} functions are available. Cloud
-                URLs ({"s3://"}, {"gs://"}, {"az://"}) are supported for public
-                data.
-              </>
-            )}
+            {engine === "postgis"
+              ? t("toolbar.sqlWorkspace.description.postgis")
+              : t("toolbar.sqlWorkspace.description.duckdb")}
           </DialogDescription>
         </DialogHeader>
 
